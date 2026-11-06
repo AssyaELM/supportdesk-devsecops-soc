@@ -1,0 +1,78 @@
+name: supportdesk
+x-backend: &backend
+  image: supportdesk-backend:local
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  environment: &backend-env
+    APP_ENV: ${APP_ENV:-development}
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_NAME: ${DB_NAME:-appdb}
+    DB_USER: ${DB_USER:-appuser}
+    DB_PASSWORD: ${DB_PASSWORD:?Configure DB_PASSWORD dans .env}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173}
+    RESET_MODE: ${RESET_MODE:-disabled}
+    SESSION_HOURS: ${SESSION_HOURS:-8}
+    DEMO_SEED_ENABLED: ${DEMO_SEED_ENABLED:-false}
+    DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+    DEMO_USER_EMAIL: ${DEMO_USER_EMAIL:-assia.benkacem@example.org}
+    DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-youssef.amrani@example.org}
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-appdb}
+      POSTGRES_USER: ${DB_USER:-appuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Configure DB_PASSWORD dans .env}
+    ports: ['127.0.0.1:55432:5432']
+    volumes: [supportdesk-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+  migrate:
+    <<: *backend
+    command: ['alembic', '-c', 'backend/alembic.ini', 'upgrade', 'head']
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 256m
+  backend:
+    <<: *backend
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 384m
+  frontend:
+    image: supportdesk-frontend:local
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports: ['127.0.0.1:8080:8080']
+    depends_on:
+      backend: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx, /var/run]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+  seed:
+    <<: *backend
+    profiles: [demo]
+    command: ['python', '-m', 'database.seed']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    mem_limit: 256m
+volumes:
+  supportdesk-data:

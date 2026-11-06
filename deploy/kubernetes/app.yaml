@@ -1,0 +1,143 @@
+# Préparation uniquement. Namespace, PostgreSQL, Secret et PVC existent déjà.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: supportdesk-config
+  namespace: secrets-app
+data:
+  APP_ENV: development
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: appdb
+  DB_USER: appuser
+  COOKIE_SECURE: "false"
+  ALLOWED_ORIGINS: http://localhost:8080
+  RESET_MODE: disabled
+  DEMO_SEED_ENABLED: "false"
+  SESSION_HOURS: "8"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: supportdesk-backend
+  namespace: secrets-app
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: supportdesk-frontend
+  namespace: secrets-app
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: secrets-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: supportdesk-backend}
+  template:
+    metadata:
+      labels: {app: supportdesk-backend}
+    spec:
+      serviceAccountName: supportdesk-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: backend
+          image: supportdesk-backend:local
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000, name: http}]
+          envFrom: [{configMapRef: {name: supportdesk-config}}]
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: POSTGRES_PASSWORD}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 15
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 32Mi}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: secrets-app
+spec:
+  selector: {app: supportdesk-backend}
+  ports: [{port: 8000, targetPort: http, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: secrets-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: supportdesk-frontend}
+  template:
+    metadata:
+      labels: {app: supportdesk-frontend}
+    spec:
+      serviceAccountName: supportdesk-frontend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: frontend
+          image: supportdesk-frontend:local
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 15
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: cache, mountPath: /var/cache/nginx}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+        - {name: cache, emptyDir: {sizeLimit: 16Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: secrets-app
+spec:
+  selector: {app: supportdesk-frontend}
+  ports: [{port: 8080, targetPort: http, name: http}]
